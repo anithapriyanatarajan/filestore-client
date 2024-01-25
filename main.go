@@ -1,208 +1,160 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 )
 
-const uploadDirectory = "./uploads"
+const serverURL = "http://localhost:8080"
 
 func main() {
-	// Create the upload directory if it doesn't exist
-	err := os.MkdirAll(uploadDirectory, 0755)
-	if err != nil {
-		fmt.Println("Error creating upload directory:", err)
-		return
-	}
+	// File paths for testing
+	uploadFilePath := "./example.txt"
+	downloadFileName := "example.txt"
+	updateFilePath := "./updated_example.txt"
 
-	// Handle file uploads
-	http.HandleFunc("/upload", uploadHandler)
+	// File Upload
+	uploadFile(uploadFilePath)
 
-	// Handle file downloads
-	http.HandleFunc("/download/", downloadHandler)
+	// File Download
+	downloadFile(downloadFileName)
 
-	// Handle file updates
-	http.HandleFunc("/update/", updateHandler)
+	// File Update
+	updateFile(downloadFileName, updateFilePath)
 
-	// Handle file deletes
-	http.HandleFunc("/delete/", deleteHandler)
+	// File Delete
+	deleteFile(downloadFileName)
 
-	// Handle file listing
-	http.HandleFunc("/list", listHandler)
-
-	// Start the server
-	port := 8080
-	fmt.Printf("Server is running on http://localhost:%d\n", port)
-	err = http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
-	if err != nil {
-		fmt.Println("Error starting server:", err)
-	}
+	// File List
+	listFiles()
 }
 
-func uploadHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Parse the form data, limit the upload size to 10 MB
-	err := r.ParseMultipartForm(10 << 20)
-	if err != nil {
-		http.Error(w, "Unable to parse form", http.StatusBadRequest)
-		return
-	}
-
-	// Get the file from the form data
-	file, handler, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "Error retrieving file from form", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	// Create the file on the server
-	filePath := filepath.Join(uploadDirectory, handler.Filename)
-	dst, err := os.Create(filePath)
-	if err != nil {
-		http.Error(w, "Error creating file on server", http.StatusInternalServerError)
-		return
-	}
-	defer dst.Close()
-
-	// Copy the uploaded file to the server file
-	_, err = io.Copy(dst, file)
-	if err != nil {
-		http.Error(w, "Error copying file to server", http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with a success message
-	fmt.Fprintf(w, "File '%s' uploaded successfully.", handler.Filename)
-}
-
-func downloadHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract the filename from the URL
-	fileName := r.URL.Path[len("/download/"):]
-
-	// Open the file for reading
-	filePath := filepath.Join(uploadDirectory, fileName)
+func uploadFile(filePath string) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
+		fmt.Println("Error opening file:", err)
 		return
 	}
 	defer file.Close()
 
-	// Set the Content-Disposition header to prompt the user to download the file
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
+	url := fmt.Sprintf("%s/upload", serverURL)
 
-	// Copy the file to the response writer
-	_, err = io.Copy(w, file)
+	var body bytes.Buffer
+	writer := io.MultiWriter(&body, file)
+
+	request, err := http.NewRequest("POST", url, &body)
 	if err != nil {
-		http.Error(w, "Error serving file", http.StatusInternalServerError)
+		fmt.Println("Error creating request:", err)
 		return
 	}
+
+	request.Header.Set("Content-Type", "multipart/form-data")
+	request.Header.Set("Filename", filePath)
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Println("Error uploading file:", err)
+		return
+	}
+	defer response.Body.Close()
+
+	fmt.Println("Upload Response:", response.Status)
 }
 
-func updateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func downloadFile(fileName string) {
+	url := fmt.Sprintf("%s/download/%s", serverURL, fileName)
 
-	// Extract the filename from the URL
-	fileName := r.URL.Path[len("/update/"):]
-
-	// Open the existing file for writing
-	filePath := filepath.Join(uploadDirectory, fileName)
-	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, 0644)
+	response, err := http.Get(url)
 	if err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
+		fmt.Println("Error downloading file:", err)
 		return
 	}
-	defer file.Close()
+	defer response.Body.Close()
 
-	// Copy the new content from the request body to the file
-	_, err = io.Copy(file, r.Body)
-	if err != nil {
-		http.Error(w, "Error updating file", http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with a success message
-	fmt.Fprintf(w, "File '%s' updated successfully.", fileName)
-}
-
-func deleteHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract the filename from the URL
-	fileName := r.URL.Path[len("/delete/"):]
-
-	// Remove the file from the server
-	filePath := filepath.Join(uploadDirectory, fileName)
-	err := os.Remove(filePath)
-	if err != nil {
-		http.Error(w, "Error deleting file", http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with a success message
-	fmt.Fprintf(w, "File '%s' deleted successfully.", fileName)
-}
-
-func listHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Get the list of files in the upload directory
-	files, err := listFiles(uploadDirectory)
-	if err != nil {
-		http.Error(w, "Error listing files", http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with the list of files
-	w.Header().Set("Content-Type", "text/plain")
-	for _, file := range files {
-		fmt.Fprintln(w, file)
-	}
-}
-
-func listFiles(directory string) ([]string, error) {
-	var files []string
-
-	err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+	if response.StatusCode == http.StatusOK {
+		file, err := os.Create(fileName)
 		if err != nil {
-			return err
+			fmt.Println("Error creating file:", err)
+			return
 		}
-		if !info.IsDir() {
-			// Exclude directories from the list
-			relativePath, err := filepath.Rel(uploadDirectory, path)
-			if err != nil {
-				return err
-			}
-			files = append(files, relativePath)
-		}
-		return nil
-	})
+		defer file.Close()
 
+		_, err = io.Copy(file, response.Body)
+		if err != nil {
+			fmt.Println("Error copying file:", err)
+			return
+		}
+
+		fmt.Println("Download successful.")
+	} else {
+		fmt.Println("Download failed. Server response:", response.Status)
+	}
+}
+
+func updateFile(fileName string, filePath string) {
+	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, err
+		fmt.Println("Error opening file:", err)
+		return
+	}
+	defer file.Close()
+
+	url := fmt.Sprintf("%s/update/%s", serverURL, fileName)
+
+	response, err := http.Put(url, "application/octet-stream", file)
+	if err != nil {
+		fmt.Println("Error updating file:", err)
+		return
+	}
+	defer response.Body.Close()
+
+	fmt.Println("Update Response:", response.Status)
+}
+
+func deleteFile(fileName string) {
+	url := fmt.Sprintf("%s/delete/%s", serverURL, fileName)
+
+	request, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		fmt.Println("Error creating request:", err)
+		return
 	}
 
-	return files, nil
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Println("Error deleting file:", err)
+		return
+	}
+	defer response.Body.Close()
+
+	fmt.Println("Delete Response:", response.Status)
+}
+
+func listFiles() {
+	url := fmt.Sprintf("%s/list", serverURL)
+
+	response, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error listing files:", err)
+		return
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusOK {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println("Error reading response:", err)
+			return
+		}
+
+		fmt.Println("List of Files:")
+		fmt.Println(string(body))
+	} else {
+		fmt.Println("List files failed. Server response:", response.Status)
+	}
 }
