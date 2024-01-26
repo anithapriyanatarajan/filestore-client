@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 )
@@ -11,99 +12,98 @@ import (
 const serverURL = "http://localhost:8080"
 
 func main() {
-	args := os.Args[2:]
 
+	allowedOperations := []string{"add", "ls", "rm", "update", "wc", "freq-words"}
+
+	if notInList(os.Args[1], allowedOperations) {
+		fmt.Printf("%s is not a supported operation. Allowed Operations are %v\n", os.Args[1], allowedOperations)
+		return
+	}
+
+	args := os.Args[2:]
 	// 1.Add files
 	if os.Args[1] == "add" {
 		for i, arg := range args {
 			fmt.Printf("%d: %s\n", i+1, arg)
 			uploadFilePath := arg
-			// File Upload
-			uploadFile(uploadFilePath)
+			err := uploadFile(uploadFilePath)
+			if err != nil {
+				fmt.Println("Error uploading file:", err)
+				return
+			}
+			fmt.Println("File uploaded successfully.")
 		}
 	}
 
-	// 2.list files
+	// 2. list files in store
 	if os.Args[1] == "ls" {
 		listFiles()
 	}
 
-	// 3.Remove file
+	// 3. Remove a file
 	if os.Args[1] == "rm" {
 		deleteFile(os.Args[2])
 	}
 
-	// 4.update file
+	// 4. update a file
 	if os.Args[1] == "update" {
 		updateFile(os.Args[2])
 	}
-
-	// 5a. Word Count of all files
-
-	// 5b. Least and Most frequently used words with additional options limit and sort
 }
 
-func uploadFile(fileName string) {
-	file, err := os.Open(fileName)
+func notInList(element string, list []string) bool {
+	for _, value := range list {
+		if value == element {
+			return false // Element is present in the list
+		}
+	}
+	return true // Element is not present in the list
+}
+
+func uploadFile(filePath string) error {
+	file, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
+		return err
 	}
 	defer file.Close()
 
-	url := fmt.Sprintf("%s/upload", serverURL)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
 
-	var body bytes.Buffer
-	//writer := io.MultiWriter(&body, file)
-
-	request, err := http.NewRequest("POST", url, &body)
+	part, err := writer.CreateFormFile("file", filePath)
 	if err != nil {
-		fmt.Println("Error creating request:", err)
-		return
+		return err
 	}
 
-	request.Header.Set("Content-Type", "multipart/form-data")
-	request.Header.Set("Filename", fileName)
+	_, err = io.Copy(part, file)
+	if err != nil {
+		return err
+	}
+
+	err = writer.Close()
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/upload", serverURL)
+	request, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		return err
+	}
+
+	request.Header.Set("Content-Type", writer.FormDataContentType())
 
 	client := &http.Client{}
 	response, err := client.Do(request)
 	if err != nil {
-		fmt.Println("Error uploading file:", err)
-		return
+		return err
 	}
 	defer response.Body.Close()
 
-	fmt.Println("Upload Response:", response.Status)
-}
-
-func downloadFile(fileName string) {
-	url := fmt.Sprintf("%s/download/%s", serverURL, fileName)
-
-	response, err := http.Get(url)
-	if err != nil {
-		fmt.Println("Error downloading file:", err)
-		return
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("Server responded with %s", response.Status)
 	}
-	defer response.Body.Close()
 
-	if response.StatusCode == http.StatusOK {
-		file, err := os.Create(fileName)
-		if err != nil {
-			fmt.Println("Error creating file:", err)
-			return
-		}
-		defer file.Close()
-
-		_, err = io.Copy(file, response.Body)
-		if err != nil {
-			fmt.Println("Error copying file:", err)
-			return
-		}
-
-		fmt.Println("Download successful.")
-	} else {
-		fmt.Println("Download failed. Server response:", response.Status)
-	}
+	return nil
 }
 
 func updateFile(fileName string) {
@@ -115,20 +115,36 @@ func updateFile(fileName string) {
 	defer file.Close()
 
 	url := fmt.Sprintf("%s/update/%s", serverURL, fileName)
+	request, err := http.NewRequest("PUT", url, file)
 
-	response, err := http.Post(url, "application/octet-stream", file)
 	if err != nil {
-		fmt.Println("Error updating file:", err)
+		fmt.Println("Error creating PUT request:", err)
+		return
+	}
+
+	// Set the content type header
+	request.Header.Set("Content-Type", "application/octet-stream")
+
+	// Create an HTTP client
+	client := &http.Client{}
+
+	// Perform the PUT request
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Println("Error performing PUT request:", err)
 		return
 	}
 	defer response.Body.Close()
 
-	fmt.Println("Update Response:", response.Status)
+	// Print the response status code and body
+	fmt.Println("Response Status Code:", response.Status)
+	fmt.Println("Response Body:")
+	io.Copy(os.Stdout, response.Body)
 }
 
 func deleteFile(fileName string) {
 	url := fmt.Sprintf("%s/delete/%s", serverURL, fileName)
-
+	fmt.Println(url)
 	request, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
 		fmt.Println("Error creating request:", err)
@@ -161,7 +177,6 @@ func listFiles() {
 			return
 		}
 		fmt.Println("List of Files:")
-		fmt.Printf("%T", body)
 		fmt.Println(string(body))
 	} else {
 		fmt.Println("List files failed. Server response:", response.Status)
