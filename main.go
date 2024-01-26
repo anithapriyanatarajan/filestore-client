@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 )
 
@@ -33,13 +35,20 @@ func main() {
 				fmt.Println("Error generating file hash:", err)
 				return
 			}
-			duplicationstatus, err := duplicateOnHashMatch(uploadFilePath, hash)
-			if err != nil || duplicationstatus == "unmatched" {
-				fmt.Println("WARN: performing hashmatch. proceeding standard upload ", err)
+			matchingfile, err := findHashMatch(uploadFilePath, hash)
+			if err != nil || matchingfile == "unmatched" {
 				err := uploadFile(uploadFilePath)
 				if err != nil {
 					fmt.Println("Error uploading file:", err)
 					return
+				}
+			} else {
+				if !(uploadFilePath == matchingfile) {
+					_, err := duplicatefile(uploadFilePath, matchingfile)
+					if err != nil {
+						fmt.Println("Error uploading file:", err)
+						return
+					}
 				}
 			}
 			fmt.Println("File uploaded successfully.")
@@ -210,25 +219,72 @@ func generateFileHash(filePath string) (string, error) {
 	return hashString, nil
 }
 
-func duplicateOnHashMatch(filename string, hash string) (string, error) {
-	url := fmt.Sprintf("%s/verifyhashmatch/%s", serverURL, filename)
-	response, err := http.Get(url)
+func findHashMatch(filename string, hash string) (string, error) {
+	serverURL := fmt.Sprintf("%s/findMatchingFile", serverURL)
+	apiURL, err := url.Parse(serverURL)
 	if err != nil {
-		fmt.Println("Error listing files:", err)
+		fmt.Println("Error parsing API URL:", err)
+		return "", err
+	}
+
+	// Add query parameter for the hash
+	parameters := url.Values{}
+	parameters.Add("hash", hash)
+	apiURL.RawQuery = parameters.Encode()
+
+	// Send GET request
+	response, err := http.Get(apiURL.String())
+	if err != nil {
+		fmt.Println("Error making GET request:", err)
 		return "", err
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusOK {
-		body, err := io.ReadAll(response.Body)
-		if err != nil {
-			fmt.Println("Error reading response:", err)
-			return "", err
-		}
-		fmt.Println("List of Files:")
-		fmt.Println(string(body))
-		return string(body), nil //http response should return unmatched
-	} else {
-		fmt.Println("List files failed. Server response:", response.Status)
+
+	// Parse the JSON response
+	var result map[string]string
+	err = json.NewDecoder(response.Body).Decode(&result)
+	if err != nil {
+		fmt.Println("Error decoding JSON response:", err)
 		return "", err
 	}
+
+	// Print the result
+	if matchingFileName, ok := result["matchingFileName"]; ok {
+		return matchingFileName, nil
+	} else {
+		return "unmatched", nil
+	}
+}
+
+func duplicatefile(uploadFilePath string, matchingfile string) (string, error) {
+	serverURL := fmt.Sprintf("%s/copyFile", serverURL)
+	apiURL, err := url.Parse(serverURL)
+	if err != nil {
+		fmt.Println("Error parsing API URL:", err)
+		return "", err
+	}
+
+	// Add query parameter for the hash
+	parameters := url.Values{}
+	parameters.Add("src", matchingfile)
+	parameters.Add("dest", uploadFilePath)
+	apiURL.RawQuery = parameters.Encode()
+
+	// Send GET request
+	response, err := http.Get(apiURL.String())
+	if err != nil {
+		fmt.Println("Error making Copy request:", err)
+		return "", err
+	}
+	defer response.Body.Close()
+
+	// Parse the JSON response
+	var result map[string]string
+	err = json.NewDecoder(response.Body).Decode(&result)
+	if err != nil {
+		fmt.Println("Error decoding JSON response:", err)
+		return "", err
+	}
+
+	return "", nil
 }
