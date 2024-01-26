@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -21,15 +23,24 @@ func main() {
 	}
 
 	args := os.Args[2:]
-	// 1.Add files
+	// 1.Add files + Incorporating hash logic for optimization
 	if os.Args[1] == "add" {
 		for i, arg := range args {
 			fmt.Printf("%d: %s\n", i+1, arg)
 			uploadFilePath := arg
-			err := uploadFile(uploadFilePath)
+			hash, err := generateFileHash(uploadFilePath)
 			if err != nil {
-				fmt.Println("Error uploading file:", err)
+				fmt.Println("Error generating file hash:", err)
 				return
+			}
+			duplicationstatus, err := duplicateOnHashMatch(uploadFilePath, hash)
+			if err != nil || duplicationstatus == "unmatched" {
+				fmt.Println("WARN: performing hashmatch. proceeding standard upload ", err)
+				err := uploadFile(uploadFilePath)
+				if err != nil {
+					fmt.Println("Error uploading file:", err)
+					return
+				}
 			}
 			fmt.Println("File uploaded successfully.")
 		}
@@ -144,7 +155,6 @@ func updateFile(fileName string) {
 
 func deleteFile(fileName string) {
 	url := fmt.Sprintf("%s/delete/%s", serverURL, fileName)
-	fmt.Println(url)
 	request, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
 		fmt.Println("Error creating request:", err)
@@ -180,5 +190,45 @@ func listFiles() {
 		fmt.Println(string(body))
 	} else {
 		fmt.Println("List files failed. Server response:", response.Status)
+	}
+}
+
+func generateFileHash(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+
+	hashInBytes := hash.Sum(nil)
+	hashString := hex.EncodeToString(hashInBytes)
+	return hashString, nil
+}
+
+func duplicateOnHashMatch(filename string, hash string) (string, error) {
+	url := fmt.Sprintf("%s/verifyhashmatch/%s", serverURL, filename)
+	response, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error listing files:", err)
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusOK {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println("Error reading response:", err)
+			return "", err
+		}
+		fmt.Println("List of Files:")
+		fmt.Println(string(body))
+		return string(body), nil //http response should return unmatched
+	} else {
+		fmt.Println("List files failed. Server response:", response.Status)
+		return "", err
 	}
 }
