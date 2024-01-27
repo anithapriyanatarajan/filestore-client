@@ -35,13 +35,10 @@ func main() {
 				fmt.Println("Error generating file hash:", err)
 				return
 			}
+
 			matchingfile, err := findHashMatch(uploadFilePath, hash)
 			if err != nil || matchingfile == "unmatched" {
-				err := uploadFile(uploadFilePath)
-				if err != nil {
-					fmt.Println("Error uploading file:", err)
-					return
-				}
+				uploadFile(uploadFilePath, hash)
 			} else {
 				if !(uploadFilePath == matchingfile) {
 					_, err := duplicatefile(uploadFilePath, matchingfile)
@@ -51,7 +48,7 @@ func main() {
 					}
 				}
 			}
-			fmt.Println("File uploaded successfully.")
+			return
 		}
 	}
 
@@ -80,10 +77,10 @@ func notInList(element string, list []string) bool {
 	return true // Element is not present in the list
 }
 
-func uploadFile(filePath string) error {
+func uploadFile(filePath string, hashstring string) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return
 	}
 	defer file.Close()
 
@@ -92,22 +89,26 @@ func uploadFile(filePath string) error {
 
 	part, err := writer.CreateFormFile("file", filePath)
 	if err != nil {
-		return err
+		return
 	}
 
 	_, err = io.Copy(part, file)
 	if err != nil {
-		return err
+		return
 	}
+
+	// Add the hash as a URL value
+	writer.WriteField("hash", hashstring)
 
 	err = writer.Close()
 	if err != nil {
-		return err
+		return
 	}
+
 	url := fmt.Sprintf("%s/upload", serverURL)
 	request, err := http.NewRequest("POST", url, body)
 	if err != nil {
-		return err
+		return
 	}
 
 	request.Header.Set("Content-Type", writer.FormDataContentType())
@@ -115,15 +116,20 @@ func uploadFile(filePath string) error {
 	client := &http.Client{}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("Server responded with %s", response.Status)
+	if response.StatusCode == http.StatusOK {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println("Error reading response:", err)
+			return
+		}
+		fmt.Printf("File uploaded %s.\n", filePath)
+		fmt.Println(string(body))
+	} else {
+		fmt.Println("could not upload file.", response.Status)
 	}
-
-	return nil
 }
 
 func updateFile(fileName string) {
@@ -202,7 +208,10 @@ func listFiles() {
 	}
 }
 
+//Calculate hash for the given file.
+
 func generateFileHash(filePath string) (string, error) {
+	fmt.Println("IsHashGenerated.")
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", err
@@ -249,7 +258,8 @@ func findHashMatch(filename string, hash string) (string, error) {
 	}
 
 	// Print the result
-	if matchingFileName, ok := result["matchingFileName"]; ok {
+	matchingFileName, exists := result["matchingFileName"]
+	if !exists {
 		return matchingFileName, nil
 	} else {
 		return "unmatched", nil
@@ -279,12 +289,14 @@ func duplicatefile(uploadFilePath string, matchingfile string) (string, error) {
 	defer response.Body.Close()
 
 	// Parse the JSON response
-	var result map[string]string
-	err = json.NewDecoder(response.Body).Decode(&result)
-	if err != nil {
-		fmt.Println("Error decoding JSON response:", err)
-		return "", err
-	}
+	/*
+		var result map[string]string
+		err = json.NewDecoder(response.Body).Decode(&result)
+		if err != nil {
+			fmt.Println("Error decoding JSON response:", err)
+			return "", err
+		}
+	*/
 
 	return "", nil
 }
