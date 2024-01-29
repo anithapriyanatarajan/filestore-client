@@ -35,20 +35,19 @@ func main() {
 				fmt.Println("Error generating file hash:", err)
 				return
 			}
-
 			matchingfile, err := findHashMatch(uploadFilePath, hash)
 			if err != nil || matchingfile == "unmatched" {
 				uploadFile(uploadFilePath, hash)
 			} else {
 				if !(uploadFilePath == matchingfile) {
-					_, err := duplicatefile(uploadFilePath, matchingfile)
+					fmt.Printf("File with matching content located: %s\n", matchingfile)
+					_, err := duplicatefile(uploadFilePath, matchingfile, hash)
 					if err != nil {
 						fmt.Println("Error uploading file:", err)
 						return
 					}
 				}
 			}
-			return
 		}
 	}
 
@@ -64,7 +63,17 @@ func main() {
 
 	// 4. update a file
 	if os.Args[1] == "update" {
-		updateFile(os.Args[2])
+		hash, err := generateFileHash(os.Args[2])
+		if err != nil {
+			fmt.Println("Error generating file hash:", err)
+			return
+		}
+		updateFile(os.Args[2], hash)
+	}
+
+	// 5. Word Count Handler
+	if os.Args[1] == "wc" {
+		wordCount()
 	}
 }
 
@@ -110,9 +119,7 @@ func uploadFile(filePath string, hashstring string) {
 	if err != nil {
 		return
 	}
-
 	request.Header.Set("Content-Type", writer.FormDataContentType())
-
 	client := &http.Client{}
 	response, err := client.Do(request)
 	if err != nil {
@@ -120,52 +127,67 @@ func uploadFile(filePath string, hashstring string) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
-		body, err := io.ReadAll(response.Body)
+		_, err := io.ReadAll(response.Body)
 		if err != nil {
 			fmt.Println("Error reading response:", err)
 			return
 		}
 		fmt.Printf("File uploaded %s.\n", filePath)
-		fmt.Println(string(body))
 	} else {
 		fmt.Println("could not upload file.", response.Status)
 	}
 }
 
-func updateFile(fileName string) {
-	file, err := os.Open(fileName)
+func updateFile(filePath string, hashstring string) {
+	file, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("Error opening file:", err)
 		return
 	}
 	defer file.Close()
 
-	url := fmt.Sprintf("%s/update/%s", serverURL, fileName)
-	request, err := http.NewRequest("PUT", url, file)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
 
+	part, err := writer.CreateFormFile("file", filePath)
 	if err != nil {
-		fmt.Println("Error creating PUT request:", err)
 		return
 	}
 
-	// Set the content type header
-	request.Header.Set("Content-Type", "application/octet-stream")
+	_, err = io.Copy(part, file)
+	if err != nil {
+		return
+	}
 
-	// Create an HTTP client
+	// Add the hash as a URL value
+	writer.WriteField("hash", hashstring)
+
+	err = writer.Close()
+	if err != nil {
+		return
+	}
+
+	url := fmt.Sprintf("%s/update", serverURL)
+	request, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		return
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
-
-	// Perform the PUT request
 	response, err := client.Do(request)
 	if err != nil {
-		fmt.Println("Error performing PUT request:", err)
 		return
 	}
 	defer response.Body.Close()
-
-	// Print the response status code and body
-	fmt.Println("Response Status Code:", response.Status)
-	fmt.Println("Response Body:")
-	io.Copy(os.Stdout, response.Body)
+	if response.StatusCode == http.StatusOK {
+		_, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println("Error reading response:", err)
+			return
+		}
+		fmt.Printf("File updated %s.\n", filePath)
+	} else {
+		fmt.Println("could not update file.", response.Status)
+	}
 }
 
 func deleteFile(fileName string) {
@@ -201,8 +223,38 @@ func listFiles() {
 			fmt.Println("Error reading response:", err)
 			return
 		}
-		fmt.Println("List of Files:")
-		fmt.Println(string(body))
+		if string(body) != "" {
+			fmt.Println("List of Files:")
+			fmt.Println(string(body))
+			return
+		} else {
+			fmt.Println("No Files located.")
+		}
+	} else {
+		fmt.Println("List files failed. Server response:", response.Status)
+	}
+}
+
+func wordCount() {
+	url := fmt.Sprintf("%s/wordCount", serverURL)
+	response, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error Counting words across files:", err)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusOK {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println("Error reading response:", err)
+			return
+		}
+		if string(body) != "" {
+			fmt.Println(string(body))
+			return
+		} else {
+			fmt.Println("No Files found.")
+		}
 	} else {
 		fmt.Println("List files failed. Server response:", response.Status)
 	}
@@ -211,7 +263,6 @@ func listFiles() {
 //Calculate hash for the given file.
 
 func generateFileHash(filePath string) (string, error) {
-	fmt.Println("IsHashGenerated.")
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", err
@@ -258,26 +309,22 @@ func findHashMatch(filename string, hash string) (string, error) {
 	}
 
 	// Print the result
-	matchingFileName, exists := result["matchingFileName"]
-	if !exists {
-		return matchingFileName, nil
-	} else {
-		return "unmatched", nil
-	}
+	return result["matchingFileName"], nil
 }
 
-func duplicatefile(uploadFilePath string, matchingfile string) (string, error) {
+func duplicatefile(uploadFilePath string, matchingfile string, hash string) (string, error) {
+	fmt.Println("Initializing file duplication at server")
 	serverURL := fmt.Sprintf("%s/copyFile", serverURL)
 	apiURL, err := url.Parse(serverURL)
 	if err != nil {
 		fmt.Println("Error parsing API URL:", err)
 		return "", err
 	}
-
 	// Add query parameter for the hash
 	parameters := url.Values{}
 	parameters.Add("src", matchingfile)
 	parameters.Add("dest", uploadFilePath)
+	parameters.Add("hashstring", hash)
 	apiURL.RawQuery = parameters.Encode()
 
 	// Send GET request
